@@ -62,6 +62,8 @@ In the Render dashboard, add these environment variables:
 | `DEBUG` | `False` | Must be False for production |
 | `ALLOWED_HOSTS` | `.onrender.com` | Render will auto-populate your domain |
 | `PYTHON_VERSION` | `3.11.0` | Python runtime version |
+Email configuration is not required. New accounts can sign in immediately,
+and password changes are handled directly by the forgot-password form.
 
 **Important:** After deployment, update `ALLOWED_HOSTS` to include your actual Render URL:
 ```

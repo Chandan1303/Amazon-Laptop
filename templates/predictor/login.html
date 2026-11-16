@@ -150,14 +150,6 @@
               <i class="fa-solid fa-spinner fa-spin" id="btnSpinner" style="display:none"></i>
             </button>
 
-            {% if resend_verification_email %}
-            <div style="margin-top: 10px; text-align: center;">
-              <a href="{% url 'resend_verification' %}?email={{ resend_verification_email|urlencode }}" style="color: var(--blue); text-decoration: none; font-weight: 600;">
-                Resend verification email
-              </a>
-            </div>
-            {% endif %}
-
             <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-top:6px;">
               <a href="{% url 'signup' %}" style="color:var(--blue);text-decoration:none;font-weight:600;">Create account</a>
               <a href="{% url 'forgot_password' %}" id="forgot-password" style="color:var(--text-muted);text-decoration:none;font-weight:600;">Forgot password?</a>

@@ -62,22 +62,6 @@ ALLOWED_HOSTS = [host.strip() for host in configured_hosts.split(',') if host.st
 for host in DEFAULT_ALLOWED_HOSTS:
     if host not in ALLOWED_HOSTS:
         ALLOWED_HOSTS.append(host)
-# Public site URL used for email verification links on laptop and mobile devices.
-PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', '').rstrip('/')
-if PUBLIC_BASE_URL:
-    CSRF_TRUSTED_ORIGINS = [PUBLIC_BASE_URL]
-
-# Email configuration for account verification and password reset
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
-EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
-EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() in {'1', 'true', 'yes', 'on'}
-EMAIL_HOST_USER = os.environ.get('EMAIL_USER', '')
-EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_PASSWORD', '')
-DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER)
-SERVER_EMAIL = os.environ.get('SERVER_EMAIL', EMAIL_HOST_USER)
-EMAIL_TIMEOUT = 30
-
 # Application definition
 
 INSTALLED_APPS = [

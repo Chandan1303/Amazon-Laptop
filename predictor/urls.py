@@ -19,10 +19,8 @@ urlpatterns = [
     path('predict-price/', views.predict_price, name='predict_price'),
     path('patterns/', views.patterns, name='patterns'),
     path('signup/', views.signup_view, name='signup'),
-    path('verify-email/<uidb64>/<token>/', views.verify_email_view, name='verify_email'),
-    path('resend-verification/', views.resend_verification_view, name='resend_verification'),
+    path('resend-verification/', views.legacy_resend_verification_redirect, name='resend_verification'),
     path('forgot-password/', views.forgot_password_view, name='forgot_password'),
-    path('reset-password/<uidb64>/<token>/', views.reset_password_view, name='reset_password'),
     path('login/', views.login_view, name='login'),
     path('logout/', views.logout_view, name='logout'),
 ]

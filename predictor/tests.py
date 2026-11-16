@@ -14,6 +14,7 @@
 import numbers
 import os
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
@@ -22,6 +23,16 @@ from predictor import views
 
 class LaptopProjectQATestCase(TestCase):
     """QA-focused tests covering the main app flows and validation rules."""
+
+    def setUp(self):
+        super().setUp()
+        user = get_user_model().objects.create_user(
+            username='qa_user',
+            email='qa@example.com',
+            password='StrongPass123',
+            is_active=True,
+        )
+        self.client.force_login(user)
 
     @classmethod
     def setUpClass(cls):
@@ -230,6 +241,22 @@ class LaptopProjectQATestCase(TestCase):
         payload.pop('total_sales')
         response = self.client.post(reverse('predict_price'), payload)
         self.assertEqual(response.status_code, 200)
+        self.assertIn('predicted_price', response.context)
+
+    def test_31a_price_prediction_post_without_rating_or_total_sales(self):
+        payload = self.price_post.copy()
+        payload.pop('rating')
+        payload.pop('total_sales')
+        response = self.client.post(reverse('predict_price'), payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('predicted_price', response.context)
+
+    def test_23a_brand_prediction_post_without_rating(self):
+        payload = self.brand_post.copy()
+        payload.pop('rating')
+        response = self.client.post(reverse('index'), payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('predicted_brand', response.context)
 
     def test_32_price_prediction_post_missing_cpu_speed(self):
         payload = self.price_post.copy()
@@ -349,6 +376,30 @@ class LaptopProjectQATestCase(TestCase):
         response = self.client.get(reverse('patterns'))
         self.assertEqual(len(response.context['patterns']), 10)
 
+    def test_patterns_qa_dashboard_displays_authentication_test_cases(self):
+        response = self.client.get(reverse('patterns'))
+        auth_test_cases = [
+            test_case for test_case in response.context['qa_test_cases']
+            if test_case['id'].startswith('AUTH')
+        ]
+
+        self.assertEqual(len(auth_test_cases), 13)
+        for scenario in (
+            'Signup stores password as a hash',
+            'New account can sign in immediately',
+            'Forgot password updates the password directly',
+            'Password reset rejects the current password',
+            'Signup rejects invalid email formats',
+            'Signup rejects mismatched passwords',
+            'Signup rejects passwords shorter than eight characters',
+            'Signup rejects duplicate usernames',
+            'Signup rejects duplicate email addresses',
+            'Signup rejects missing required fields',
+            'Login rejects an incorrect password',
+        ):
+            with self.subTest(scenario=scenario):
+                self.assertContains(response, scenario)
+
     def test_49_project_model_values_are_loaded(self):
         self.assertTrue(hasattr(views, 'model'))
         self.assertTrue(hasattr(views, 'price_model'))
@@ -458,6 +509,205 @@ class LaptopProjectRouteHealthTestCase(TestCase):
         )
         self.assertContains(response, 'Username and email must be different')
 
+    def test_signup_creates_active_account_without_sending_email(self):
+        response = self.client.post(
+            reverse('signup'),
+            {
+                'username': 'hashed_password_user',
+                'email': 'hashed-password@example.com',
+                'password1': 'StrongPass123',
+                'password2': 'StrongPass123',
+            },
+        )
+
+        user = get_user_model().objects.get(username='hashed_password_user')
+        self.assertEqual(response.status_code, 200)
+        self.assertNotEqual(user.password, 'StrongPass123')
+        self.assertTrue(user.check_password('StrongPass123'))
+        self.assertTrue(user.is_active)
+        self.assertContains(response, 'You can now sign in')
+
+    def test_login_activates_legacy_inactive_account_with_valid_password(self):
+        user = get_user_model().objects.create_user(
+            username='unverified_user',
+            email='unverified@example.com',
+            password='StrongPass123',
+            is_active=False,
+        )
+
+        response = self.client.post(
+            reverse('login'),
+            {'username': user.username, 'password': 'StrongPass123'},
+        )
+
+        user.refresh_from_db()
+        self.assertTrue(user.is_active)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.client.session.get('_auth_user_id'), str(user.pk))
+
+    def test_legacy_resend_verification_post_redirects_to_login_without_email(self):
+        response = self.client.post(
+            reverse('resend_verification'),
+            {'email': 'resend@example.com'},
+        )
+
+        self.assertRedirects(response, reverse('login'))
+
+    def test_forgot_password_updates_password_directly(self):
+        user = get_user_model().objects.create_user(
+            username='reset_email_user',
+            email='reset-email@example.com',
+            password='OldStrongPass123',
+            is_active=True,
+        )
+
+        response = self.client.post(
+            reverse('forgot_password'),
+            {
+                'email': user.email,
+                'password1': 'NewStrongPass456',
+                'password2': 'NewStrongPass456',
+            },
+        )
+
+        self.assertContains(response, 'Password updated')
+        user.refresh_from_db()
+        self.assertTrue(user.check_password('NewStrongPass456'))
+
+    def test_forgot_password_form_accepts_new_password_directly(self):
+        response = self.client.get(reverse('forgot_password'))
+
+        self.assertContains(response, 'name="password1"')
+        self.assertContains(response, 'name="password2"')
+        self.assertContains(response, 'Update password')
+
+    def test_signup_rejects_invalid_email_formats(self):
+        for index, email in enumerate(('invalid-email', 'user@localhost')):
+            with self.subTest(email=email):
+                response = self.client.post(
+                    reverse('signup'),
+                    {
+                        'username': f'invalid_email_user_{index}',
+                        'email': email,
+                        'password1': 'StrongPass123',
+                        'password2': 'StrongPass123',
+                    },
+                )
+
+                self.assertContains(response, 'Please enter a valid email address.')
+                self.assertFalse(
+                    get_user_model().objects.filter(username=f'invalid_email_user_{index}').exists()
+                )
+
+    def test_signup_rejects_password_mismatch(self):
+        response = self.client.post(
+            reverse('signup'),
+            {
+                'username': 'mismatch_user',
+                'email': 'mismatch@example.com',
+                'password1': 'StrongPass123',
+                'password2': 'DifferentPass123',
+            },
+        )
+
+        self.assertContains(response, 'Passwords do not match')
+        self.assertFalse(get_user_model().objects.filter(username='mismatch_user').exists())
+
+    def test_signup_rejects_password_shorter_than_eight_characters(self):
+        response = self.client.post(
+            reverse('signup'),
+            {
+                'username': 'short_password_user',
+                'email': 'short-password@example.com',
+                'password1': 'short',
+                'password2': 'short',
+            },
+        )
+
+        self.assertContains(response, 'Password must be at least 8 characters long.')
+        self.assertFalse(get_user_model().objects.filter(username='short_password_user').exists())
+
+    def test_signup_rejects_duplicate_username(self):
+        get_user_model().objects.create_user(
+            username='existing_signup_user',
+            email='existing-signup@example.com',
+            password='StrongPass123',
+        )
+
+        response = self.client.post(
+            reverse('signup'),
+            {
+                'username': 'existing_signup_user',
+                'email': 'new-signup@example.com',
+                'password1': 'StrongPass123',
+                'password2': 'StrongPass123',
+            },
+        )
+
+        self.assertContains(response, 'That username is already in use')
+
+    def test_signup_rejects_duplicate_email(self):
+        get_user_model().objects.create_user(
+            username='existing_email_user',
+            email='existing-email@example.com',
+            password='StrongPass123',
+        )
+
+        response = self.client.post(
+            reverse('signup'),
+            {
+                'username': 'new_email_user',
+                'email': 'existing-email@example.com',
+                'password1': 'StrongPass123',
+                'password2': 'StrongPass123',
+            },
+        )
+
+        self.assertContains(response, 'An account with that email already exists.')
+
+    def test_signup_rejects_missing_required_field(self):
+        response = self.client.post(
+            reverse('signup'),
+            {
+                'username': 'missing_field_user',
+                'email': 'missing-field@example.com',
+                'password1': 'StrongPass123',
+            },
+        )
+
+        self.assertContains(response, 'Please complete all fields to create an account.')
+        self.assertFalse(get_user_model().objects.filter(username='missing_field_user').exists())
+
+    def test_login_rejects_incorrect_password(self):
+        get_user_model().objects.create_user(
+            username='incorrect_password_user',
+            email='incorrect-password@example.com',
+            password='StrongPass123',
+            is_active=True,
+        )
+
+        response = self.client.post(
+            reverse('login'),
+            {'username': 'incorrect_password_user', 'password': 'WrongPass123'},
+        )
+
+        self.assertContains(response, 'Invalid username or password.')
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+    def test_signup_does_not_expose_verification_or_resend_controls(self):
+        response = self.client.get(reverse('signup'))
+
+        self.assertNotContains(response, 'Verify email')
+        self.assertNotContains(response, 'Resend verification email')
+
+    def test_legacy_resend_verification_get_redirects_to_login(self):
+        response = self.client.get(
+            reverse('resend_verification'),
+            {'email': 'legacy@example.com'},
+        )
+
+        self.assertRedirects(response, reverse('login'))
+
     def test_62_login_page_has_password_field(self):
         response = self.client.get(reverse('login'))
         self.assertContains(response, 'id="password"')
@@ -468,36 +718,48 @@ class LaptopProjectRouteHealthTestCase(TestCase):
         response = self.client.get(reverse('signup'))
         self.assertContains(response, 'Sign in')
 
-    def test_64_verify_email_page_has_resend_link(self):
-        response = self.client.get(reverse('verify_email', args=['dW5rZWFkeQ', 'badtoken']))
-        self.assertContains(response, 'Resend verification email')
+    def test_64_verification_route_is_removed(self):
+        response = self.client.get('/verify-email/dW5rZWFkeQ/badtoken/')
+        self.assertEqual(response.status_code, 404)
 
-    def test_65_reset_password_rejects_reused_password(self):
-        from django.contrib.auth import get_user_model
-        from django.contrib.auth.tokens import default_token_generator
-        from django.utils.encoding import force_bytes
-        from django.utils.http import urlsafe_base64_encode
-
-        User = get_user_model()
-        user = User.objects.create_user(username='reuse_user', email='reuse@example.com', password='OldPass123', is_active=True)
-        uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
-        token = default_token_generator.make_token(user)
-
+    def test_65_forgot_password_rejects_current_password(self):
+        user = get_user_model().objects.create_user(
+            username='reuse_user',
+            email='reuse@example.com',
+            password='OldPass123',
+            is_active=True,
+        )
         response = self.client.post(
-            reverse('reset_password', args=[uidb64, token]),
-            {'password1': 'OldPass123', 'password2': 'OldPass123'}
+            reverse('forgot_password'),
+            {
+                'email': user.email,
+                'password1': 'OldPass123',
+                'password2': 'OldPass123',
+            },
         )
 
-        self.assertContains(response, 'previously used password')
+        self.assertContains(response, 'different from your current password')
+        user.refresh_from_db()
+        self.assertTrue(user.check_password('OldPass123'))
 
 
 class LaptopFrontendBlackBoxTestCase(TestCase):
     """Black-box validation for the browser-facing inputs and UI flows."""
 
+    def setUp(self):
+        super().setUp()
+        user = get_user_model().objects.create_user(
+            username='frontend_user',
+            email='frontend@example.com',
+            password='StrongPass123',
+            is_active=True,
+        )
+        self.client.force_login(user)
+
     def test_bb_01_brand_prediction_form_has_required_fields(self):
         response = self.client.get(reverse('index'))
         self.assertContains(response, 'id="price"')
-        self.assertContains(response, 'id="rating"')
+        self.assertNotContains(response, 'id="rating"')
         self.assertContains(response, 'id="screen_size"')
         self.assertContains(response, 'id="storage_gb"')
         self.assertContains(response, 'id="ram_gb"')
@@ -509,12 +771,12 @@ class LaptopFrontendBlackBoxTestCase(TestCase):
     def test_bb_02_price_prediction_form_has_required_fields(self):
         response = self.client.get(reverse('predict_price'))
         self.assertContains(response, 'id="brand"')
-        self.assertContains(response, 'id="rating"')
+        self.assertNotContains(response, 'id="rating"')
         self.assertContains(response, 'id="screen_size"')
         self.assertContains(response, 'id="storage_gb"')
         self.assertContains(response, 'id="ram_gb"')
         self.assertContains(response, 'id="cpu_speed"')
-        self.assertContains(response, 'id="total_sales"')
+        self.assertNotContains(response, 'id="total_sales"')
         self.assertContains(response, 'id="cpu"')
         self.assertContains(response, 'id="os"')
         self.assertContains(response, 'id="graphics"')

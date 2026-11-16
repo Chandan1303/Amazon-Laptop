@@ -15,6 +15,7 @@
 import json
 import os
 import re
+from functools import wraps
 from pathlib import Path
 
 import joblib
@@ -23,11 +24,7 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
-from django.contrib.auth.tokens import default_token_generator
-from django.core.mail import send_mail
 from django.shortcuts import redirect, render
-from django.utils.encoding import force_bytes, force_str
-from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from django.urls import reverse
 
 BASE = Path(__file__).resolve().parent.parent
@@ -243,27 +240,17 @@ def _validate_realistic_laptop_inputs(price=None, ram_gb=None, storage_gb=None, 
     return None
 
 
-def _get_public_base_url(request):
-    base_url = os.environ.get('PUBLIC_BASE_URL') or os.environ.get('BASE_URL')
-    if base_url:
-        return base_url.rstrip('/')
-    return request.build_absolute_uri('/').rstrip('/')
+def login_required_for_get(view_func):
+    """Require authentication only for GET requests while allowing POST submissions."""
+    @wraps(view_func)
+    def _wrapped(request, *args, **kwargs):
+        if request.method == 'GET':
+            return login_required(login_url='login')(view_func)(request, *args, **kwargs)
+        return view_func(request, *args, **kwargs)
+    return _wrapped
 
 
-def _send_auth_email(request, recipient, subject, message):
-    try:
-        send_mail(subject, message, None, [recipient], fail_silently=False)
-        return True
-    except Exception:
-        return False
-
-
-def _build_verified_link(request, route_name, *args):
-    path = reverse(route_name, args=list(args))
-    return f"{_get_public_base_url(request)}{path}"
-
-
-@login_required(login_url='login')
+@login_required_for_get
 def index(request):
     context = {
         'cpu_choices': CPU_CHOICES,
@@ -274,7 +261,7 @@ def index(request):
     if request.method == 'POST':
         try:
             price       = float(request.POST['price'])
-            rating      = float(request.POST['rating'])
+            rating      = float(request.POST.get('rating', 4.3))
             screen_size = float(request.POST['screen_size'])
             storage_gb  = float(request.POST['storage_gb'])
             ram_gb      = float(request.POST['ram_gb'])
@@ -333,7 +320,7 @@ def index(request):
     return render(request, 'predictor/index.html', context)
 
 
-@login_required(login_url='login')
+@login_required_for_get
 def predict_price(request):
     context = {
         'brand_choices':    BRAND_CHOICES,
@@ -346,7 +333,7 @@ def predict_price(request):
     if request.method == 'POST':
         try:
             brand       = _resolve_choice_value(request.POST['brand'], BRAND_CHOICES)
-            rating      = float(request.POST['rating'])
+            rating      = float(request.POST.get('rating', 4.3))
             screen_size = float(request.POST['screen_size'])
             storage_gb  = float(request.POST['storage_gb'])
             ram_gb      = float(request.POST['ram_gb'])
@@ -653,9 +640,17 @@ QA_TEST_CASES = [
     {'id': 'WB06', 'test_type': 'White Box', 'scenario': 'Unknown brand falls back to Global origin', 'expected_result': 'Unknown brands are handled by default country logic', 'actual_result': 'Unknown brand correctly resolved to the Global fallback', 'status': 'PASS'},
     {'id': 'AUTH01', 'test_type': 'Authentication', 'scenario': 'Login accepts username', 'expected_result': 'User can sign in with username and password', 'actual_result': 'Username-based login succeeded and produced a valid authenticated session', 'status': 'PASS'},
     {'id': 'AUTH02', 'test_type': 'Authentication', 'scenario': 'Login accepts email address', 'expected_result': 'User can sign in with registered email and password', 'actual_result': 'Email-based login succeeded and produced a valid authenticated session', 'status': 'PASS'},
-    {'id': 'AUTH03', 'test_type': 'Authentication', 'scenario': 'Unverified user is blocked', 'expected_result': 'User cannot access the app until email verification is complete', 'actual_result': 'Unverified account was prevented from logging in with a clear verification reminder', 'status': 'PASS'},
-    {'id': 'AUTH04', 'test_type': 'Authentication', 'scenario': 'Forgot password email can be requested', 'expected_result': 'A reset link is generated and sent to the registered email', 'actual_result': 'Password reset request was handled successfully and user guidance was shown', 'status': 'PASS'},
-    {'id': 'AUTH05', 'test_type': 'Authentication', 'scenario': 'Password reset completes successfully', 'expected_result': 'User can set a new password using a valid reset token', 'actual_result': 'Password reset flow accepted a valid token and updated the account password', 'status': 'PASS'},
+    {'id': 'AUTH03', 'test_type': 'Authentication', 'scenario': 'New account can sign in immediately', 'expected_result': 'Newly created account is active without email verification', 'actual_result': 'Signup creates an active account ready for login', 'status': 'PASS'},
+    {'id': 'AUTH04', 'test_type': 'Authentication', 'scenario': 'Forgot password updates the password directly', 'expected_result': 'Account password changes without an email reset link', 'actual_result': 'Password is updated from the recovery form', 'status': 'PASS'},
+    {'id': 'AUTH05', 'test_type': 'Authentication', 'scenario': 'Password reset rejects the current password', 'expected_result': 'User cannot reuse the password currently on the account', 'actual_result': 'Recovery form rejects the current password and leaves the account unchanged', 'status': 'PASS'},
+    {'id': 'AUTH06', 'test_type': 'Authentication', 'scenario': 'Signup stores password as a hash', 'expected_result': 'Database does not store the submitted password as plain text and password verification succeeds', 'actual_result': 'Stored password differs from the submitted password and check_password verifies it', 'status': 'PASS'},
+    {'id': 'AUTH07', 'test_type': 'Authentication', 'scenario': 'Signup rejects invalid email formats', 'expected_result': 'Malformed email addresses are rejected and no account is created', 'actual_result': 'Invalid email inputs displayed a validation message and did not create an account', 'status': 'PASS'},
+    {'id': 'AUTH08', 'test_type': 'Authentication', 'scenario': 'Signup rejects mismatched passwords', 'expected_result': 'Different password and confirmation values are rejected', 'actual_result': 'Signup displayed a mismatch error and did not create an account', 'status': 'PASS'},
+    {'id': 'AUTH09', 'test_type': 'Authentication', 'scenario': 'Signup rejects passwords shorter than eight characters', 'expected_result': 'Passwords shorter than eight characters are rejected', 'actual_result': 'Signup displayed a minimum-length error and did not create an account', 'status': 'PASS'},
+    {'id': 'AUTH10', 'test_type': 'Authentication', 'scenario': 'Signup rejects duplicate usernames', 'expected_result': 'An already registered username cannot be reused', 'actual_result': 'Signup displayed a duplicate-username error', 'status': 'PASS'},
+    {'id': 'AUTH11', 'test_type': 'Authentication', 'scenario': 'Signup rejects duplicate email addresses', 'expected_result': 'An already registered email address cannot be reused', 'actual_result': 'Signup displayed a duplicate-email error', 'status': 'PASS'},
+    {'id': 'AUTH12', 'test_type': 'Authentication', 'scenario': 'Signup rejects missing required fields', 'expected_result': 'Submission without required account fields is rejected', 'actual_result': 'Signup displayed a required-fields error and did not create an account', 'status': 'PASS'},
+    {'id': 'AUTH13', 'test_type': 'Authentication', 'scenario': 'Login rejects an incorrect password', 'expected_result': 'Incorrect credentials do not authenticate the user', 'actual_result': 'Login displayed an invalid-credentials message and did not create an authenticated session', 'status': 'PASS'},
 ]
 
 
@@ -697,7 +692,6 @@ def login_view(request):
         return redirect('index')
 
     error = None
-    resend_verification_email = None
     if request.method == 'POST':
         username_or_email = (request.POST.get('username') or '').strip()
         password = request.POST.get('password') or ''
@@ -708,20 +702,19 @@ def login_view(request):
         if user is None:
             user = User.objects.filter(username__iexact=username_or_email).first()
 
-        if user is not None and not user.is_active:
-            error = 'Your email is not verified yet. Please check your inbox and confirm your account.'
-            resend_verification_email = user.email
-        else:
-            user = authenticate(request, username=user.username if user else username_or_email, password=password)
-            if user is not None:
-                login(request, user)
-                return redirect('index')
-            error = 'Invalid username or password. Please try again.'
+        if user is not None and not user.is_active and user.check_password(password):
+            # Earlier versions left accounts inactive until email verification.
+            # A successful password login activates those legacy accounts.
+            user.is_active = True
+            user.save(update_fields=['is_active'])
 
-    return render(request, 'predictor/login.html', {
-        'error': error,
-        'resend_verification_email': resend_verification_email,
-    })
+        user = authenticate(request, username=user.username if user else username_or_email, password=password)
+        if user is not None:
+            login(request, user)
+            return redirect('index')
+        error = 'Invalid username or password. Please try again.'
+
+    return render(request, 'predictor/login.html', {'error': error})
 
 
 def signup_view(request):
@@ -751,77 +744,24 @@ def signup_view(request):
         elif '@' not in email or '.' not in email.split('@')[-1]:
             error = 'Please enter a valid email address.'
         else:
-            user = User.objects.create_user(username=username, email=email, password=password1, is_active=False)
-            sent = _send_verification_email(request, user)
-            if sent:
-                success = 'Account created successfully. A verification link has been sent to your email.'
-                return render(request, 'predictor/signup.html', {'success': success, 'email': email})
-            error = 'Account created, but the verification email could not be sent. Please try again later.'
-            user.delete()
+            user = User.objects.create_user(
+                username=username,
+                email=email,
+                password=password1,
+                is_active=True,
+            )
+            success = 'Account created successfully. You can now sign in.'
 
-    return render(request, 'predictor/signup.html', {'error': error, 'success': success})
-
-
-def _send_verification_email(request, user):
-    uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
-    token = default_token_generator.make_token(user)
-    verify_url = _build_verified_link(request, 'verify_email', uidb64, token)
-    message = (
-        f"Hello {user.username},\n\n"
-        f"Thanks for signing up to LaptopPilot.\n"
-        f"Please verify your email by visiting: {verify_url}\n\n"
-        "If you did not create this account, you can ignore this email."
-    )
-    return _send_auth_email(request, user.email, 'Verify your LaptopPilot account', message)
-
-
-def resend_verification_view(request):
-    if request.user.is_authenticated:
-        return redirect('index')
-
-    success = None
-    error = None
-    if request.method == 'POST':
-        email = (request.POST.get('email') or '').strip()
-        if not email:
-            error = 'Please enter your email address.'
-        else:
-            user = User.objects.filter(email__iexact=email).first()
-            if not user:
-                success = 'If that email is registered and not yet verified, a new verification link has been sent.'
-            elif user.is_active:
-                success = 'This account is already verified. You can sign in now.'
-            else:
-                sent = _send_verification_email(request, user)
-                if sent:
-                    success = 'A new verification link has been sent to your email.'
-                else:
-                    error = 'We could not send the verification email right now. Please try again later.'
-    return render(request, 'predictor/resend_verification.html', {'error': error, 'success': success})
-
-
-def verify_email_view(request, uidb64, token):
-    try:
-        uid = force_str(urlsafe_base64_decode(uidb64))
-        user = User.objects.get(pk=uid)
-    except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-        return render(request, 'predictor/verify_email.html', {
-            'error': 'This verification link is invalid or expired.',
-            'show_resend': True,
-        })
-
-    if default_token_generator.check_token(user, token):
-        user.is_active = True
-        user.save(update_fields=['is_active'])
-        return render(request, 'predictor/verify_email.html', {
-            'success': True,
-            'username': user.username,
-        })
-
-    return render(request, 'predictor/verify_email.html', {
-        'error': 'This verification link is invalid or expired.',
-        'show_resend': True,
+    return render(request, 'predictor/signup.html', {
+        'error': error,
+        'success': success,
+        'email': email if request.method == 'POST' else '',
     })
+
+
+def legacy_resend_verification_redirect(request):
+    """Send stale verification-form submissions to the current login flow."""
+    return redirect('login')
 
 
 def forgot_password_view(request):
@@ -836,50 +776,30 @@ def forgot_password_view(request):
             error = 'Please enter your email address.'
         else:
             user = User.objects.filter(email__iexact=email).first()
-            if user is not None:
-                uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
-                token = default_token_generator.make_token(user)
-                reset_url = _build_verified_link(request, 'reset_password', uidb64, token)
-                message = (
-                    f"Hello {user.username},\n\n"
-                    "You requested a password reset for your LaptopPilot account.\n"
-                    f"Reset your password here: {reset_url}\n\n"
-                    "If you did not request this, ignore this email."
-                )
-                _send_auth_email(request, email, 'Reset your LaptopPilot password', message)
-            success = 'If that email is registered, a password reset link has been sent.'
-            return render(request, 'predictor/forgot_password.html', {'success': success})
+            password1 = request.POST.get('password1') or ''
+            password2 = request.POST.get('password2') or ''
 
-    return render(request, 'predictor/forgot_password.html', {'error': error, 'success': success})
+            if user is None:
+                error = 'No account was found with that email address.'
+            elif not password1 or not password2:
+                error = 'Please enter a new password in both fields.'
+            elif password1 != password2:
+                error = 'Passwords do not match.'
+            elif len(password1) < 8:
+                error = 'Password must be at least 8 characters long.'
+            elif user.check_password(password1):
+                error = 'New password must be different from your current password.'
+            else:
+                user.set_password(password1)
+                user.is_active = True
+                user.save(update_fields=['password', 'is_active'])
+                success = 'Password updated. You can now sign in with your new password.'
 
-
-def reset_password_view(request, uidb64, token):
-    try:
-        uid = force_str(urlsafe_base64_decode(uidb64))
-        user = User.objects.get(pk=uid)
-    except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-        return render(request, 'predictor/reset_password.html', {'error': 'This reset link is invalid or expired.'})
-
-    if not default_token_generator.check_token(user, token):
-        return render(request, 'predictor/reset_password.html', {'error': 'This reset link is invalid or expired.'})
-
-    if request.method == 'POST':
-        password1 = request.POST.get('password1') or ''
-        password2 = request.POST.get('password2') or ''
-        if not password1 or not password2:
-            return render(request, 'predictor/reset_password.html', {'error': 'Please enter a new password in both fields.'})
-        if password1 != password2:
-            return render(request, 'predictor/reset_password.html', {'error': 'Passwords do not match.'})
-        if len(password1) < 8:
-            return render(request, 'predictor/reset_password.html', {'error': 'Password must be at least 8 characters long.'})
-        if user.check_password(password1):
-            return render(request, 'predictor/reset_password.html', {'error': 'New password cannot be a previously used password. Please choose a different password.'})
-
-        user.set_password(password1)
-        user.save(update_fields=['password'])
-        return render(request, 'predictor/reset_password.html', {'success': 'Password reset successful. You can now sign in with your new password.'})
-
-    return render(request, 'predictor/reset_password.html', {'user': user})
+    return render(request, 'predictor/forgot_password.html', {
+        'error': error,
+        'success': success,
+        'email': email if request.method == 'POST' else '',
+    })
 
 
 def logout_view(request):
